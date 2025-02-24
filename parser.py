@@ -1,101 +1,126 @@
-from pathlib import Path
-from typing import Any
-import chromadb
-from pdfminer.high_level import extract_text
-from sentence_transformers import SentenceTransformer
-import numpy as np
-import json
-import chunker
 import os
+import pytesseract
+import pdfplumber
+#For windows install Poppler
+from pdf2image import convert_from_path
+from PIL import Image
+from docx import Document
+import re
+from langchain_text_splitters import RecursiveCharacterTextSplitter
+from langchain_core.documents import Document
+from dotenv import load_dotenv
+from langchain_openai import OpenAIEmbeddings
+from langchain_chroma import Chroma
+
+# For Windows, set the path to Tesseract and Poppler, needs to be installed
+pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+POPPLER_PATH=r'C:\Program Files\poppler-windows-24.08.0-0'
+FOLDER_PATH = "./PoliciesForTheTask"
+load_dotenv()
 
 class Parser:
 
     def __init__(self):
+        self.directory = None
 
-        self.folder_path = None
-        self.chunk_size = None
-        self.chunked_text = {}
-        self.parsed_text_ = {}
-        self.embeddings = {}
-        self.collection = None
-        self.parser_model = SentenceTransformer("all-MiniLM-L6-v2")
+    def parse_pdf(self, file_path):
+        """Extract text from a PDF (either searchable or scanned)."""
+        text = ""
 
-    def parse_folder(self, folder_path:str, chroma_path:str, collection_name:str, parser_model)-> dict:
-        self.folder_path = folder_path
+        try:
+            # Try extracting text from searchable PDFs
+            with pdfplumber.open(file_path) as pdf:
+                for page in pdf.pages:
+                    text += page.extract_text() or ""  # Ensure it doesn't break on None
 
-        for file_name in Path(self.folder_path).glob("*.pdf"):
-            self.parsed_text_[str(file_name)] = extract_text(file_name)
-            print(f'{file_name} parsed')
+            if text.strip():  # If we got text, return it
+                return text
 
-        chunk_processor = chunker.TextProcessor(chunk_size=500, max_words=30000)
-        self.chunked_text = chunk_processor.chunk_text(self.parsed_text_)
-        # self.chunked_text = self.chunk_text(self.parsed_text_)
-        self.embeddings = self.create_embeddings(self.chunked_text, model= parser_model)
-        print('Files are Embedded!!!')
-        self.store_embeddings(self.embeddings, self.chunked_text, path=chroma_path, collection_name=collection_name)
-        print('Embeddings are Stored!!!')
-        return self.parsed_text_
+            # If not, assume it's a scanned PDF and use OCR
+            images = convert_from_path(file_path, poppler_path=POPPLER_PATH)
+            text = "\n".join([pytesseract.image_to_string(img) for img in images])
+            return text
 
-    def chunk_text(self, file_text:dict, chunk_size = 500) -> dict:
-        self.chunk_size = chunk_size
-        chunked_text = {}
-        for filename, text in file_text.items():
-            print(f'{filename} chunked')
-            words = text.split()
-            chunked_text[filename] = [" ".join(words[i:i + self.chunk_size]) for i in range(0, len(words), self.chunk_size)]
+        except Exception as e:
+            print(f"Error parsing PDF {file_path}: {e}")
+            return None
 
-        return chunked_text
+    def parse_image(self, file_path):
+        """Extract text from an image using OCR."""
+        try:
+            image = Image.open(file_path)
+            return pytesseract.image_to_string(image)
+        except Exception as e:
+            print(f"Error parsing image {file_path}: {e}")
+            return None
 
-    @staticmethod
-    def create_embeddings(chunked_text:dict, model: SentenceTransformer) -> dict:
-        return {filename: np.array(model.encode(text)) for filename, text in chunked_text.items() }
+    def parse_docx(self, file_path):
+        """Extract text from a Word document."""
+        try:
+            doc = Document(file_path)
+            return "\n".join([para.text for para in doc.paragraphs])
+        except Exception as e:
+            print(f"Error parsing Word document {file_path}: {e}")
+            return None
 
-    def store_embeddings(self, embeddings:dict, text_chunks:dict, path:str, collection_name:str) -> Any:
-        chroma_db = chromadb.PersistentClient(path=path)
-        chroma_db.delete_collection(collection_name)
-        self.collection = chroma_db.get_or_create_collection(collection_name)
+    def parse_file(self,file_path):
+        """Determine file type and parse accordingly."""
+        ext = file_path.lower().split('.')[-1]
 
-        for i, (filename, embedding_array) in enumerate(embeddings.items()):
-            embedding_array = np.array(embedding_array)  # Ensure it's a NumPy array
-            if embedding_array.ndim == 1:  # Convert single embeddings into a proper 2D shape
-                embedding_array = embedding_array.reshape(1, -1)
+        if ext == "pdf":
+            return self.parse_pdf(file_path)
+        elif ext in ["png", "jpg", "jpeg", "tiff"]:
+            return self.parse_image(file_path)
+        elif ext in ["docx"]:
+            return self.parse_docx(file_path)
+        else:
+            print(f"Unsupported file format: {file_path}")
+            return None
 
-            # Generate unique IDs for each chunked embedding
-            ids = [f"{i}_{j}" for j in range(len(embedding_array))]
+    def process_directory(self, directory):
+        """Parse all supported files in a directory and return LangChain-compatible Documents."""
+        langchain_docs = []
 
-            # Convert embeddings to list format
-            embeddings_list = embedding_array.tolist()
+        for root, _, files in os.walk(directory):
+            for file in files:
+                file_path = os.path.join(root, file)
+                text = self.parse_file(file_path)
 
-            chunk_texts = text_chunks.get(filename, [])
+                if text:
+                    text = self.clean_text(text)
+                    langchain_docs.append(Document(page_content=text, metadata={"source": file_path}))
 
-            if len(chunk_texts) != len(embedding_array):
-                print(
-                    f"Warning: Mismatch in embeddings ({len(embedding_array)}) and text chunks ({len(chunk_texts)}) for {filename}")
-            # Create metadata for each embedding chunk
-            metadatas = [{"filename": filename, "chunk": j} for j in range(len(embedding_array))]
+        return langchain_docs
 
-            # Store embeddings correctly
-            self.collection.add(
-                ids=ids,  # List of unique IDs
-                embeddings=embeddings_list,  # List of embeddings
-                metadatas=metadatas,   # List of metadata entries
-                documents = chunk_texts
-            )
+    def clean_text(self, text: str) -> str:
 
+        # Remove extra newlines, headers, bullet points etc.
+        text = re.sub(r"\n+", " ", text)
+        text = re.sub(r"\s{2,}", " ", text)
+        text = re.sub(r"[-●•◦○]", "", text)
+        text = re.sub(r"Page \d+|Table of Contents|\.{3,}", "", text)
+        return text.strip()
+
+    def store_in_chroma(self, directory, embeddings):
+        self.docs = self.process_directory(directory)
+        print(f"Loaded {len(self.docs)} documents into LangChain.")
+
+        text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,  # approx. 1000 characters per chunk (adjust as needed)
+            chunk_overlap=200
+        )
+        split_docs = text_splitter.split_documents(self.docs)
+        print(f"Split into {len(split_docs)} chunks.")
+
+        persist_directory = "chroma_db"  # directory for persistent storage
+
+        # Create (or load) the Chroma vector store.
+        vectorstore = Chroma.from_documents(split_docs, embeddings, persist_directory=persist_directory)
+        print("Documents stored in Chroma.")
+
+        return vectorstore
 
 if __name__ == "__main__":
     ps = Parser()
-    folder_path = str(os.getenv('FILE_PATH'))
-    ps.parse_folder('./PoliciesForTheTask')
-
-    # parsed_dict = ps.retrieve_text()
-    # print(parsed_dict)
-    # chunked = ps.chunk_text(parsed_dict)
-    # print(chunked)
-    # embeddings = ps.create_embeddings(chunked_text=chunked,model=SentenceTransformer("all-MiniLM-L6-v2"))
-    # for filename, embedding in ps.embeddings.items():
-    #     print(ps.embeddings[filename])
-    #
-    # path = "./chroma"
-    # collection_name = "policy_embeddings"
-    # ps.store_embeddings(embeddings, chunked, path, collection_name)
+    embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
+    ps.store_in_chroma(FOLDER_PATH, embeddings)
