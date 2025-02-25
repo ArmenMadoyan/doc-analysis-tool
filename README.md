@@ -63,7 +63,7 @@ The project generates structured reports based on the following predefined categ
 - **Additional Governance Disclosures:**  
   Alignment with standards, stakeholder engagement, performance metrics, assurance.
 
-The system retrieves relevant document chunks from ChromaDB using semantic similarity search and then uses multiple LLM APIs (e.g., GPT-3.5-turbo, Gemini, Claude, Llama, Mistral) to generate and evaluate the final report. Gemini is used as a judge LLM to assess report quality, accuracy, and completeness.
+The system retrieves relevant document chunks from ChromaDB using semantic similarity search and then uses multiple LLM APIs e.g GPT-4-turbo, Gemini (In future might be also Claude, Llama, Mistral) to generate and evaluate the final report. Gemini is used as a judge LLM to assess report quality, accuracy, and completeness.
 
 ## Optimization Ideas
 
