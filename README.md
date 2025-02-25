@@ -1,7 +1,3 @@
-Below is a sample README.md file you can copy into your GitHub repository:
-
----
-
 # Doc Analysis Tool Project
 
 This project implements a Retrieval-Augmented Generation (RAG) pipeline using LangChain, ChromaDB, and multiple LLM APIs (OpenAI, Gemini, Claude, Llama, Mistral) to process, extract, and summarize compliance-related documents. The system loads documents from a specified folder, processes them with OCR (using OCRmyPDF for scanned PDFs), stores embeddings in ChromaDB, and generates structured reports based on predefined categories.
