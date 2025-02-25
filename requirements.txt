@@ -1,0 +1,25 @@
+# Standard Library Imports
+shutil
+json
+textwrap
+dotenv
+PIL
+pdfplumber
+pytesseract
+docx2txt
+docx
+ocrmypdf
+tempfile
+shutil
+
+# LangChain-Related Imports
+langchain_text_splitters
+langchain_core.documents
+langchain_openai
+langchain_chains
+langchain.llms.base
+langchain_chroma
+langchain_google_genai
+
+
+

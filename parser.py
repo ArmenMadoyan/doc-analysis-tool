@@ -1,22 +1,19 @@
 import os
 import pytesseract
 import pdfplumber
-#For windows install Poppler
-from pdf2image import convert_from_path
+import tempfile
+import ocrmypdf
+import shutil
 from PIL import Image
-from docx import Document
+import docx2txt
 import re
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_core.documents import Document
-from dotenv import load_dotenv
 from langchain_openai import OpenAIEmbeddings
 from langchain_chroma import Chroma
 
-# For Windows, set the path to Tesseract and Poppler, needs to be installed
-pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
-POPPLER_PATH=r'C:\Program Files\poppler-windows-24.08.0-0'
-FOLDER_PATH = "./PoliciesForTheTask"
-load_dotenv()
+import config
+
 
 class Parser:
 
@@ -36,14 +33,29 @@ class Parser:
             if text.strip():  # If we got text, return it
                 return text
 
-            # If not, assume it's a scanned PDF and use OCR
-            images = convert_from_path(file_path, poppler_path=POPPLER_PATH)
-            text = "\n".join([pytesseract.image_to_string(img) for img in images])
-            return text
+            with tempfile.NamedTemporaryFile(suffix=".pdf", delete=False) as temp_pdf:
+                temp_pdf_path = temp_pdf.name
+
+            try:
+                # Run OCR on the PDF and save the output to temp file
+                ocrmypdf.ocr(file_path, temp_pdf_path, deskew=True, force_ocr=True, language="eng")
+
+                # Read extracted text from the processed PDF
+                with open(temp_pdf_path, "rb") as f:
+                    from PyPDF2 import PdfReader
+                    reader = PdfReader(f)
+                    text = "\n".join([page.extract_text() for page in reader.pages if page.extract_text()])
+
+                return text
+
+            finally:
+                # Clean up the temporary file
+                shutil.rmtree(temp_pdf_path, ignore_errors=True)
 
         except Exception as e:
             print(f"Error parsing PDF {file_path}: {e}")
             return None
+
 
     def parse_image(self, file_path):
         """Extract text from an image using OCR."""
@@ -57,8 +69,8 @@ class Parser:
     def parse_docx(self, file_path):
         """Extract text from a Word document."""
         try:
-            doc = Document(file_path)
-            return "\n".join([para.text for para in doc.paragraphs])
+            doc = docx2txt.process(file_path)
+            return doc
         except Exception as e:
             print(f"Error parsing Word document {file_path}: {e}")
             return None
@@ -85,10 +97,10 @@ class Parser:
             for file in files:
                 file_path = os.path.join(root, file)
                 text = self.parse_file(file_path)
-
                 if text:
                     text = self.clean_text(text)
                     langchain_docs.append(Document(page_content=text, metadata={"source": file_path}))
+                # print(f"Processed {text}")
 
         return langchain_docs
 
@@ -120,7 +132,18 @@ class Parser:
 
         return vectorstore
 
-if __name__ == "__main__":
+def main():
+
+    pytesseract.pytesseract.tesseract_cmd = config.TESSERACT_DIR
+    FOLDER_PATH = config.FILE_DIR
+
     ps = Parser()
     embeddings = OpenAIEmbeddings(model="text-embedding-ada-002")
     ps.store_in_chroma(FOLDER_PATH, embeddings)
+
+
+if __name__ == "__main__":
+    main()
+
+
+
